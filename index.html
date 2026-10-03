@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Calculator</title>
+<!-- Telegram's helper script: lets the page match Telegram's colors and vibrate on taps -->
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  /* Colors come from Telegram's theme, with fallbacks for a normal browser */
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --text: var(--tg-theme-text-color, #1c1c1e);
+    --hint: var(--tg-theme-hint-color, #8a8a8e);
+    --key: var(--tg-theme-secondary-bg-color, #eef1f5);
+    --accent: var(--tg-theme-button-color, #2a8bd8);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: var(--tg-theme-bg-color, #17212b);
+      --text: var(--tg-theme-text-color, #f5f5f5);
+      --hint: var(--tg-theme-hint-color, #7d8b99);
+      --key: var(--tg-theme-secondary-bg-color, #232e3c);
+      --accent: var(--tg-theme-button-color, #5288c1);
+      --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .display {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    align-items: flex-end;
+    gap: 6px;
+    padding: 0 6px 20px;
+    min-height: 140px;
+    overflow: hidden;
+  }
+  .history {
+    color: var(--hint);
+    font-size: 22px;
+    min-height: 28px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .current {
+    font-size: 56px;
+    font-weight: 300;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .current.error { font-size: 26px; color: var(--hint); }
+  .keys {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+  button {
+    border: none;
+    border-radius: 18px;
+    height: min(19vw, 76px);
+    font-size: 28px;
+    font-family: inherit;
+    background: var(--key);
+    color: var(--text);
+    cursor: pointer;
+    transition: transform 80ms ease, filter 80ms ease;
+  }
+  button:active { transform: scale(0.94); filter: brightness(0.92); }
+  button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .op { color: var(--accent); font-size: 32px; }
+  .fn { color: var(--hint); font-size: 24px; }
+  .equals { background: var(--accent); color: var(--accent-text); font-size: 32px; }
+  .zero { grid-column: span 2; }
+  @media (prefers-reduced-motion: reduce) { button { transition: none; } }
+</style>
+</head>
+<body>
+  <div class="display">
+    <div class="history" id="history"></div>
+    <div class="current" id="current">0</div>
+  </div>
+
+  <div class="keys">
+    <button class="fn" data-k="C" aria-label="Clear">C</button>
+    <button class="fn" data-k="back" aria-label="Delete">⌫</button>
+    <button class="fn" data-k="%" aria-label="Percent">%</button>
+    <button class="op" data-k="÷" aria-label="Divide">÷</button>
+
+    <button data-k="7">7</button>
+    <button data-k="8">8</button>
+    <button data-k="9">9</button>
+    <button class="op" data-k="×" aria-label="Multiply">×</button>
+
+    <button data-k="4">4</button>
+    <button data-k="5">5</button>
+    <button data-k="6">6</button>
+    <button class="op" data-k="−" aria-label="Minus">−</button>
+
+    <button data-k="1">1</button>
+    <button data-k="2">2</button>
+    <button data-k="3">3</button>
+    <button class="op" data-k="+" aria-label="Plus">+</button>
+
+    <button class="zero" data-k="0">0</button>
+    <button data-k=".">.</button>
+    <button class="equals" data-k="=" aria-label="Equals">=</button>
+  </div>
+
+<script>
+  // Tell Telegram the app is ready and make it full height
+  const tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { tg.ready(); tg.expand(); }
+
+  const historyEl = document.getElementById("history");
+  const currentEl = document.getElementById("current");
+  const OPS = ["+", "−", "×", "÷"];
+
+  let expr = "";          // what the person has typed
+  let justSolved = false; // true right after pressing =
+
+  function vibrate() {
+    try { tg && tg.HapticFeedback.impactOccurred("light"); } catch (e) {}
+  }
+
+  // Safely works out the math (no eval). Handles + − × ÷ and % (percent).
+  function solve(text) {
+    const s = text.replace(/×/g, "*").replace(/÷/g, "/").replace(/−/g, "-");
+    let i = 0;
+    function number() {
+      const start = i;
+      while (i < s.length && /[0-9.]/.test(s[i])) i++;
+      if (start === i) throw "bad";
+      let v = parseFloat(s.slice(start, i));
+      if (isNaN(v)) throw "bad";
+      while (s[i] === "%") { v /= 100; i++; }
+      return v;
+    }
+    function signed() {
+      if (s[i] === "-") { i++; return -signed(); }
+      return number();
+    }
+    function term() {
+      let v = signed();
+      while (s[i] === "*" || s[i] === "/") {
+        const op = s[i++];
+        const r = signed();
+        if (op === "/") { if (r === 0) throw "div0"; v /= r; }
+        else v *= r;
+      }
+      return v;
+    }
+    function sum() {
+      let v = term();
+      while (s[i] === "+" || s[i] === "-") {
+        const op = s[i++];
+        const r = term();
+        v = op === "+" ? v + r : v - r;
+      }
+      return v;
+    }
+    const result = sum();
+    if (i !== s.length || !isFinite(result)) throw "bad";
+    return parseFloat(result.toPrecision(12));
+  }
+
+  function pretty(n) {
+    return n.toLocaleString("en-US", { maximumFractionDigits: 10 });
+  }
+
+  function fitText() {
+    const len = currentEl.textContent.length;
+    currentEl.style.fontSize = len > 14 ? "34px" : len > 9 ? "44px" : "";
+  }
+
+  function show() {
+    currentEl.classList.remove("error");
+    currentEl.textContent = expr || "0";
+    // Live preview of the answer while typing
+    historyEl.textContent = "";
+    if (OPS.some(op => expr.slice(1).includes(op)) || expr.includes("%")) {
+      try { historyEl.textContent = "= " + pretty(solve(expr)); } catch (e) {}
+    }
+    fitText();
+  }
+
+  function press(k) {
+    vibrate();
+    const last = expr.slice(-1);
+
+    if (k === "C") { expr = ""; justSolved = false; show(); return; }
+    if (k === "back") { expr = justSolved ? "" : expr.slice(0, -1); justSolved = false; show(); return; }
+
+    if (k === "=") {
+      if (!expr) return;
+      try {
+        const answer = solve(expr);
+        historyEl.textContent = expr + " =";
+        expr = String(answer);
+        currentEl.classList.remove("error");
+        currentEl.textContent = pretty(answer);
+        justSolved = true;
+        fitText();
+      } catch (e) {
+        currentEl.classList.add("error");
+        currentEl.textContent = e === "div0" ? "Can't divide by zero" : "Finish the problem first";
+        currentEl.style.fontSize = "";
+      }
+      return;
+    }
+
+    if (/[0-9]/.test(k)) {
+      if (justSolved) expr = "";
+      expr += k;
+    } else if (k === ".") {
+      if (justSolved) expr = "";
+      const lastNumber = expr.split(/[+−×÷]/).pop();
+      if (lastNumber.includes(".")) return;
+      expr += lastNumber === "" ? "0." : ".";
+    } else if (k === "%") {
+      if (!/[0-9]/.test(last)) return;
+      expr += "%";
+    } else if (OPS.includes(k)) {
+      if (expr === "" && k !== "−") return;
+      if (OPS.includes(last)) expr = expr.slice(0, -1);
+      if (expr === "" && k === "−") { expr = "−"; show(); return; }
+      expr += k;
+    }
+    justSolved = false;
+    show();
+  }
+
+  document.querySelectorAll("button").forEach(b =>
+    b.addEventListener("click", () => press(b.dataset.k))
+  );
+
+  // Keyboard support, handy when testing in a normal browser
+  document.addEventListener("keydown", e => {
+    const map = { "*": "×", "/": "÷", "-": "−", "Enter": "=", "Backspace": "back", "Escape": "C" };
+    const k = map[e.key] || e.key;
+    if (/^[0-9.%+=]$/.test(k) || ["×", "÷", "−", "back", "C"].includes(k)) {
+      e.preventDefault();
+      press(k);
+    }
+  });
+</script>
+</body>
+</html>
